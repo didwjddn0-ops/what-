@@ -32,27 +32,22 @@ app.get("/api/proxy-image", async (req, res) => {
   }
 });
 
-// Lazy initializer for Google GenAI client
-let aiClient: GoogleGenAI | null = null;
-
-function getGeminiClient(): GoogleGenAI {
-  if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error(
-        "GEMINI_API_KEY 환경변수가 설정되지 않았습니다. AI Studio 화면 우측 상단의 Secrets 또는 Settings에서 API 키를 입력해주세요."
-      );
-    }
-    aiClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
+// Initializer for Google GenAI client (can take a dynamic key or fallback to environment variables)
+function getGeminiClient(customApiKey?: string): GoogleGenAI {
+  const apiKey = customApiKey || process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "Gemini API Key가 설정되지 않았습니다. 화면 상단의 'API 설정' 버튼을 눌러 본인의 Gemini API Key를 입력해주시거나, 서버 환경변수(GEMINI_API_KEY)를 설정해주세요."
+    );
   }
-  return aiClient;
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        "User-Agent": "aistudio-build",
+      },
+    },
+  });
 }
 
 // REST API endpoint for architectural redesign
@@ -75,7 +70,8 @@ app.post("/api/redesign", async (req, res) => {
       return res.status(400).json({ error: "수정 요청 사항을 입력해주세요." });
     }
 
-    const ai = getGeminiClient();
+    const customApiKey = req.headers["x-gemini-api-key"] as string | undefined;
+    const ai = getGeminiClient(customApiKey);
 
     // 1. Determine which image is the "base" for this edit step.
     // If we have history and are NOT restarting from original, the base is the last result image.
@@ -228,7 +224,7 @@ app.post("/api/redesign", async (req, res) => {
       config: {
         imageConfig: {
           aspectRatio: aspectRatio,
-          imageSize: useHighQuality ? "1K" : "512px", // 1K for high quality, 512px for faster/lite
+          ...(useHighQuality ? { imageSize: "1K" } : {}),
         },
       },
     });
@@ -260,8 +256,27 @@ app.post("/api/redesign", async (req, res) => {
 
   } catch (error: any) {
     console.error("Redesign process error:", error);
+    
+    let isQuotaError = false;
+    let userFriendlyError = error.message || "이미지 리디자인 중 오류가 발생했습니다.";
+
+    // Convert error object or message to string to check for quota/billing indicators
+    const errStr = String(error.message || "") + " " + String(error.status || "") + " " + JSON.stringify(error || {});
+    if (
+      errStr.includes("429") ||
+      errStr.includes("quota") ||
+      errStr.includes("Quota") ||
+      errStr.includes("exceeded") ||
+      errStr.includes("RESOURCE_EXHAUSTED") ||
+      errStr.includes("billing")
+    ) {
+      isQuotaError = true;
+      userFriendlyError = "Gemini API 무료 전용 키의 이미지 생성 한도(Quota)가 초과되었거나, 해당 모델 사용을 위해 유료 API 키 또는 결제 프로필 설정이 필요합니다. AI Studio 화면 우측 상단의 'Settings > Secrets'에서 결제가 등록된 유료 API 키를 설정하거나, 워크스페이스 내 유료 모델 플로우(Paid Model Flow)를 활성화해주세요.";
+    }
+
     return res.status(500).json({
-      error: error.message || "이미지 리디자인 중 오류가 발생했습니다.",
+      error: userFriendlyError,
+      isQuotaError: isQuotaError
     });
   }
 });

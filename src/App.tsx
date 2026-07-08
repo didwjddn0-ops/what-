@@ -83,10 +83,30 @@ export default function App() {
   const [aspectRatio, setAspectRatio] = useState<string>("1:1");
   const [restartFromOriginal, setRestartFromOriginal] = useState<boolean>(false);
 
+  // API Key config for user custom keys (for Vercel deployment)
+  const [customApiKey, setCustomApiKey] = useState<string>("");
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [tempApiKey, setTempApiKey] = useState<string>("");
+
+  useEffect(() => {
+    const savedKey = localStorage.getItem("custom_gemini_api_key") || "";
+    setCustomApiKey(savedKey);
+    setTempApiKey(savedKey);
+  }, []);
+
+  const handleSaveApiKey = (key: string) => {
+    const trimmed = key.trim();
+    setCustomApiKey(trimmed);
+    setTempApiKey(trimmed);
+    localStorage.setItem("custom_gemini_api_key", trimmed);
+    setShowSettings(false);
+  };
+
   // Status states
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadingTextIndex, setLoadingTextIndex] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isQuotaError, setIsQuotaError] = useState<boolean>(false);
 
   // History states
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -192,15 +212,23 @@ export default function App() {
 
     setIsLoading(true);
     setErrorMsg(null);
+    setIsQuotaError(false);
 
     try {
       // Build active history for cumulative changes
       // If we restartFromOriginal, we don't pass previous history to enforce fresh edit
       const activeHistory = restartFromOriginal ? [] : history.slice(0, activeHistoryIndex + 1);
 
+      const headers: HeadersInit = {
+        "Content-Type": "application/json",
+      };
+      if (customApiKey) {
+        headers["x-gemini-api-key"] = customApiKey;
+      }
+
       const response = await fetch("/api/redesign", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           originalImage,
           prompt,
@@ -214,6 +242,9 @@ export default function App() {
 
       if (!response.ok) {
         const errorData = await response.json();
+        if (errorData.isQuotaError) {
+          setIsQuotaError(true);
+        }
         throw new Error(errorData.error || "서버 통신 중 오류가 발생했습니다.");
       }
 
@@ -306,14 +337,30 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-3 text-xs">
+            <button
+              type="button"
+              onClick={() => {
+                setTempApiKey(customApiKey);
+                setShowSettings(true);
+              }}
+              className={`px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 font-medium cursor-pointer ${
+                customApiKey 
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100" 
+                  : "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              {customApiKey ? "개인 API 키 사용 중" : "API 설정 (Vercel 필수)"}
+            </button>
             <span className="px-2.5 py-1 bg-stone-100 border border-stone-200 rounded-full font-mono text-stone-600 flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
               Live Core Active
             </span>
             {originalImage && (
               <button 
+                type="button"
                 onClick={handleFullReset}
-                className="px-3 py-1 bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 rounded-lg transition-all flex items-center gap-1"
+                className="px-3 py-1 bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
                 title="모든 데이터 초기화"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -323,6 +370,92 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* API Key settings modal */}
+      <AnimatePresence>
+        {showSettings && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-md bg-white border border-stone-200 rounded-2xl shadow-xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-stone-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <SlidersHorizontal className="w-4 h-4 text-stone-700" />
+                  <h3 className="font-bold text-stone-900">Gemini API 설정</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(false)}
+                  className="text-stone-400 hover:text-stone-600 font-bold text-sm cursor-pointer"
+                >
+                  닫기
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <p className="text-xs text-stone-600 leading-relaxed">
+                  이 앱을 Vercel 등 개인 환경에 배포하여 사용할 때, 본인의 <strong>Gemini API Key</strong>를 입력하여 제한 없이 이용하실 수 있습니다. 
+                  API 키는 브라우저의 <code>localStorage</code>에 안전하게 저장되며, 매 요청 시 서버에 헤더로 전달되어 즉시 호출에 적용됩니다.
+                </p>
+
+                <div className="space-y-1.5">
+                  <label htmlFor="api-key-input" className="text-xs font-bold text-stone-700 block">
+                    Gemini API Key
+                  </label>
+                  <input
+                    id="api-key-input"
+                    type="password"
+                    placeholder="AIzaSy..."
+                    value={tempApiKey}
+                    onChange={(e) => setTempApiKey(e.target.value)}
+                    className="w-full px-3 py-2 bg-stone-50 border border-stone-200 rounded-lg text-sm font-mono focus:outline-none focus:border-stone-400"
+                  />
+                  <div className="flex justify-between items-center pt-1">
+                    <a
+                      href="https://aistudio.google.com/app/apikey"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] text-stone-500 hover:text-stone-800 flex items-center gap-0.5 underline font-medium"
+                    >
+                      Google AI Studio에서 무료 API 키 발급받기
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                    {customApiKey && (
+                      <button
+                        type="button"
+                        onClick={() => handleSaveApiKey("")}
+                        className="text-[11px] text-red-500 hover:text-red-700 font-bold cursor-pointer"
+                      >
+                        키 초기화 (기본 서버 키 사용)
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="px-6 py-4 bg-stone-50 border-t border-stone-100 flex justify-end gap-2 text-xs font-bold">
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(false)}
+                  className="px-4 py-2 text-stone-600 hover:bg-stone-100 rounded-lg cursor-pointer"
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveApiKey(tempApiKey)}
+                  className="px-4 py-2 bg-stone-950 hover:bg-black text-white rounded-lg cursor-pointer"
+                >
+                  API 키 적용하기
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Main Workspace Frame */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
@@ -634,9 +767,49 @@ export default function App() {
 
               {/* Error Box display if any */}
               {errorMsg && (
-                <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{errorMsg}</span>
+                <div className="space-y-3">
+                  {isQuotaError ? (
+                    <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 space-y-3 shadow-sm">
+                      <div className="flex gap-2 font-bold text-amber-900 items-center">
+                        <AlertCircle className="w-5 h-5 text-amber-700 shrink-0" />
+                        <span className="text-sm">Gemini API 이미지 생성 한도(Quota) 초과 안내</span>
+                      </div>
+                      <p className="leading-relaxed">
+                        현재 설정된 Gemini API 키가 **무료 플랜**이거나 한도가 초과되어 고화질 이미지 편집용 <strong>gemini-3.1-flash-lite-image</strong> 모델을 호출할 수 없습니다. 이 문제를 해결하려면 아래 방법을 진행해주세요:
+                      </p>
+                      <ul className="list-disc pl-5 space-y-1.5 leading-relaxed font-medium">
+                        <li>
+                          <strong>유료 결제(Billing) 활성화</strong>: Google AI Studio 화면 우측 상단의 <strong>Settings &gt; Secrets</strong> 메뉴에서 결제 수단이 연동된 유료 API 키를 새로 등록하거나 확인해주세요.
+                        </li>
+                        <li>
+                          <strong>유료 플로우 가이드 활성화</strong>: AI 코딩 어시스턴트에게 <em>'유료 모델 플로우를 실행해줘'</em>라고 대화창에 요청하면 플랫폼 결제창을 직접 띄워드릴 수 있습니다.
+                        </li>
+                        <li>
+                          <strong>단시간 후 재시도</strong>: 한시적인 초당 요청 한도(RPM) 초과인 경우, 약 1~2분 후 다시 실행하면 정상 작동할 수 있습니다.
+                        </li>
+                      </ul>
+                      <div className="pt-1.5 border-t border-amber-200 flex flex-col sm:flex-row items-center gap-2">
+                        <span className="text-[10px] text-amber-700 font-mono">Status Code: 429 RESOURCE_EXHAUSTED</span>
+                        <div className="sm:ml-auto flex gap-1.5 w-full sm:w-auto">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Ask the user to message the agent
+                              alert("AI 어시스턴트와의 대화창에 '유료 모델 플로우를 실행해줘'라고 말하면 결제 설정 창이 열립니다.");
+                            }}
+                            className="w-full sm:w-auto px-3 py-1.5 bg-amber-900 hover:bg-amber-950 text-white font-bold rounded-lg transition-colors text-center cursor-pointer"
+                          >
+                            유료 플로우 연결 가이드
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{errorMsg}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
